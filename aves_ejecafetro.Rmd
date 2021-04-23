@@ -1,5 +1,5 @@
 ---
-title: "Aves eje Cafetero"
+title: "Aves_eje_Cafetero"
 author: "Sandra Rairán"
 output: 
   flexdashboard::flex_dashboard:
