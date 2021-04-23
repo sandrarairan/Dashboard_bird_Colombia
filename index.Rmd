@@ -54,9 +54,7 @@ bird <- data_bird %>%
 
 
 # Observaciones por mes de espcies
-df_observaciones <- data_bird %>% 
-  mutate(observacion_mes = month(observation_date, label = TRUE),
-         observacion_año = year(observation_date)) %>% 
+df_observaciones <- data_bird %>%
   group_by(Scientific_Name, year, Mes) %>% 
   summarize(observation_count = sum(Count, na.rm = TRUE)) %>% 
   group_by(Scientific_Name, Mes) %>% 
@@ -66,6 +64,59 @@ df_observaciones <- data_bird %>%
   replace_na(list(observation_count_mean = 0)) %>% 
   arrange(Scientific_Name, Mes)
   glimpse(df_observaciones)
+  
+  
+  df_observaciones <- df_observaciones %>% 
+  mutate(observation_count_mean_log10 = log10(observation_count_mean),
+         observation_count_mean_log10 = case_when(is.infinite(observation_count_mean_log10) ~ 0,
+                                                  TRUE ~ observation_count_mean_log10)) %>% 
+  select(-observation_count_mean)
+  
+   # k-means-(Grupos)
+  df_observaciones_aves <- df_observaciones %>% 
+  select(Scientific_Name, Mes, observation_count_mean_log10) %>% 
+  pivot_wider(names_from = Mes, values_from = observation_count_mean_log10, names_prefix = "mes_") 
+  
+  df_observaciones_aves[is.na(df_observaciones_aves)] <- 0
+  
+  
+library(purrr)
+library(tibble)
+library(tidyr)
+library(broom)
+library(dplyr)
+library(ggplot2)
+
+  
+
+  kclusts <- tibble(k = 1:9) %>%
+  mutate(
+    kclust = map(k, ~kmeans(df_observaciones_aves %>% select(-Scientific_Name), .x)),
+    tidied = map(kclust, tidy),
+    glanced = map(kclust, glance),
+    augmented = map(kclust, augment, df_observaciones_aves %>% select(-Scientific_Name))
+  )
+  
+kclusts
+
+ clusters <- kclusts %>%
+  unnest(tidied)
+ 
+ assignments <- kclusts %>% 
+  unnest(augmented)
+ 
+ clusterings <- kclusts %>%
+  unnest(glanced)
+ 
+ #Agrupa los datos usando 4 grupos
+df_kmeans <- df_observaciones_aves %>% 
+  select(-Scientific_Name) %>% 
+  kmeans(centers = 4)
+df_clustered <- augment(df_kmeans, df_observaciones_aves) %>% 
+  select(Scientific_Name, .cluster)
+df_clustered  
+ 
+
 
 ```
 
@@ -204,7 +255,7 @@ data_bird %>%
 # log10 para Para hacer que los datos con asimetría positiva sean más "normales"
 
   df_observaciones %>% 
-  ggplot(aes(Mes, observation_count_mean)) +
+  ggplot(aes(Mes, observation_count_mean_log10)) +
   geom_jitter(color="mediumorchid", size=0.7, alpha=0.5) +
     geom_boxplot(fill = "palegreen", colour = "mediumseagreen") +
     labs(x = "Observaciones por mes",
@@ -217,16 +268,121 @@ data_bird %>%
 # log10 para Para hacer que los datos con asimetría positiva sean más "normales"
   
   df_observaciones %>% 
-  ggplot(aes(Mes, observation_count_mean)) +
+  ggplot(aes(Mes, observation_count_mean_log10)) +
      geom_point(color="purple", alpha=0.8) +
     labs(x = "Observaciones por mes",
          y = "Promedio de aves observadas (log10)")
 ```
 
-Información
+
+Ordenando la agrupación en clústeres de k-means
+=======================================================================
+Column {data-height=400}
+-----------------------------------------------------------------------
+
+### Grupos óptimos
+```{r}
+ggplot(clusterings, aes(k, tot.withinss)) +
+  geom_line() +
+  geom_vline(xintercept = 2, linetype = 2) +
+  geom_vline(xintercept = 4, linetype = 2) +
+  scale_x_continuous(breaks = seq(1:9)) +
+  labs(x = "Number of clusters")
+```
+
+
+### Agrupa los datos usando 4 grupos
+
+```{r}
+#Agrupa los datos usando 4 grupos
+df_kmeans <- df_observaciones_aves %>% 
+  select(-Scientific_Name) %>% 
+  kmeans(centers = 4)
+df_clustered <- augment(df_kmeans, df_observaciones_aves) %>% 
+  select(Scientific_Name, .cluster)
+df_clustered
+```
+
+
+Agrupacion de Cluster
+=======================================================================
+
+Column {data-weight=400}
+-----------------------------------------------------------------------
+
+### Observacones por Grupo
+
+```{r}
+ vec_common_name_cluster <-
+  full_join(df_clustered,df_observaciones, by = c("Scientific_Name"= "Scientific_Name")) %>% 
+  pivot_wider(names_from = Mes, values_from = observation_count_mean_log10, names_prefix = "mes_") %>% 
+  arrange(.cluster, mes_Jan, mes_Feb, mes_Mar, mes_Apr, mes_May, mes_Jun, mes_Jul, mes_Aug, mes_Sep, mes_Oct, mes_Nov, mes_Dec) %>% 
+  pull(Scientific_Name)
+
+names(vec_common_name_cluster) <- c("Scientific_Name")
+
+df_observaciones_clustered <- 
+  full_join(df_clustered,df_observaciones, by = c("Scientific_Name"= "Scientific_Name")) %>%
+  mutate(Scientific_Name = factor(Scientific_Name, levels = vec_common_name_cluster))
+df_observaciones_clustered %>% 
+  mutate(.cluster = str_c("Cluster", .cluster, sep = " ")) %>% 
+  ggplot(aes(Mes, Scientific_Name, fill = observation_count_mean_log10)) +
+    geom_tile() +
+    facet_wrap(~.cluster, scales = "free_y", ncol = 1) +
+    scale_fill_viridis_c("Promedio  observacion (log10)") +
+    scale_x_discrete(expand = c(0,0)) +
+    scale_y_discrete(expand = c(0,0)) +
+    labs(x = "Observacion mes",
+         y = "Especies") +
+    theme(panel.grid = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          legend.direction = "horizontal",
+      legend.position="bottom",
+      legend.justification = "right")
+
+```
+
+
+### Observacones por Grupo 
+
+``` {r}
+df_cluster_sample <- df_clustered %>% 
+  group_by(.cluster) %>% 
+  sample_n(10, replace = FALSE) %>% 
+  ungroup()
+df_observaciones_clustered %>%
+  semi_join(df_cluster_sample) %>% 
+  mutate(.cluster = str_c("Cluster", .cluster, sep = " ")) %>% 
+  ggplot(aes(Mes, Scientific_Name, fill = observation_count_mean_log10)) +
+    geom_tile() +
+    facet_wrap(~.cluster, scales = "free_y", ncol = 1 ) +
+    scale_fill_viridis_c("Promedio  observacion (log10)") +
+    scale_x_discrete(expand = c(0,0)) +
+    scale_y_discrete(expand = c(0,0)) +
+    labs(x = "Observation month",
+         y = NULL) +
+    theme(panel.grid = element_blank(),
+          axis.text.y = element_text(size=5),
+          axis.ticks.y = element_blank(),
+      legend.direction = "horizontal",
+      legend.position="top",
+      legend.justification = "right")
+```
+
+
+
+Informacion
 =======================================================================
 
 
 **Datos** 
 Los datos son descargados de la plataforma Ebird sobre mis avistamientos de aves desde el 2018 en el Eje cafetero.
+
+**Referencias**
+
+  [Refencias](https://mran.microsoft.com/snapshot/2018-07-25/web/packages/broom/vignettes/kmeans.html)
+
+
+
 
